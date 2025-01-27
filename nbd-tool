@@ -374,7 +374,12 @@ disk_info() {
 #Check if nbd module is loded to kernel
 if ! check_nbd_modprobe; then
     echo "Error: nbd module is not loadaded to kernel" >&2
-    return 1
+    exit 1
+fi
+
+if [[ $EUID -ne 0 ]]; then
+    echo "Error: This script must be run as root." >&2
+    exit 1
 fi
 
 # Check if no arguments are provided
@@ -389,6 +394,10 @@ while [[ $# -gt 0 ]]; do
         mount|unmount|info)
             ACTION="$1"
             shift
+            ;;
+        -h)
+            show_help
+            exit 0
             ;;
         *)
             ARGS+=("$1")
