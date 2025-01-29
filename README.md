@@ -101,7 +101,8 @@ Mounts qcow2 disk."
 
 ##### Options
 
-- -o OPTION   Mount option.
+- -o OPTION   Extra mount options (comma-separated or multiple -o).
+- -q OPTION   Extra qemu-nbd options (comma-separated or multiple -q).
 - -p PART_ID  ID of partition, if 0 mounted disk without partitions (default: 0).
 - -t TIMEOUT  Timeout in seconds for waiting for free nbd devie, if 0 disable timeout (default: 0).
 
@@ -124,6 +125,7 @@ Info (fdisk) of qcow2 disk.
 
 ##### Options
 
+- -q OPTION   Extra qemu-nbd options (comma-separated or multiple -q).
 - -t TIMEOUT  Timeout in seconds for waiting for free nbd devie, if 0 disable timeout (default: 0).
 
 ##### Requires
@@ -140,7 +142,7 @@ nbd-tool -h
 ```
 
 ```bash
-nbd-tool mount -o rw,defaults -a noatime -t 60 -p 1 test.img /mnt/nbd
+nbd-tool mount -o rw,defaults -o noatime -q format=qcow2 -t 60 -p 1 test.img /mnt/nbd
 ```
 
 ```bash

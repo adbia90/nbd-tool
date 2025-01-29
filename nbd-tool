@@ -12,6 +12,11 @@ VALID_MOUNT_OPTIONS=(
     "barrier=1" "nobarrier" "lazytime" "noacl" "acl"
 )
 
+VALID_QEMU_NBD_OPTIONS=(
+    "offset" "socket" "format" "read-only" "cache"
+    "nocache" "aio"  "shared"
+)
+
 
 LOCKFILE="/tmp/nbd-mount.lock"
 exec 200>"$LOCKFILE"
@@ -22,7 +27,8 @@ show_help() {
     echo "Actions:"
     echo "  mount               Mounts qcow2 disk."
     echo "      Options:"
-    echo "          -o OPTION   Mount option."
+    echo "          -o OPTION   Extra mount options (comma-separated or multiple -o)."
+    echo "          -q OPTION   Extra qemu-nbd options (comma-separated or multiple -q)."
     echo "          -p PART_ID  ID of partition, if 0 mounted disk without partitions (default: 0)."
     echo "          -t TIMEOUT  Timeout in seconds for waiting for free nbd devie, if 0 disable timeout (default: 0)."
     echo "      Requires:"
@@ -33,6 +39,7 @@ show_help() {
     echo "          TARGET      Path to mount point."
     echo "  info                Info (fdisk) of qcow2 disk."
     echo "      Options:"
+    echo "          -q OPTION   Extra qemu-nbd options (comma-separated or multiple -q)."
     echo "          -t TIMEOUT  Timeout in seconds for waiting for free nbd devie, if 0 disable timeout (default: 0)."
     echo "      Requires:"
     echo "          SOURCE      Path to qcow2 file."
@@ -41,7 +48,7 @@ show_help() {
     echo
     echo "Example:"
     echo "  $0 -h"
-    echo "  $0 mount -o rw,defaults -a noatime -t 60 -p 1 test.img /mnt/nbd"
+    echo "  $0 mount -o rw,defaults -a noatime -q format=qcow2 -t 60 -p 1 test.img /mnt/nbd"
     echo "  $0 unmount /mnt/nbd"
     echo "  $0 info -t 60 test.img"
     echo
@@ -62,13 +69,13 @@ check_source() {
     if [[ -z "$pid" ]] || [[ $status -ne 0 ]]; then
         return 1
     fi
-    
+
     device=$(ps -p $pid -o args --no-headers | awk -F'--connect=' '{print $2}' | awk '{print $1}')
     status=$?
     if [[ -z "$device" ]] || [[ $status -ne 0 ]]; then
         return 1
     fi
-    
+
     echo $device
     return 0
 }
@@ -80,8 +87,8 @@ get_available_device() {
     while true; do
         device="nbd$i"
         if [ ! -e "/dev/$device" ]; then
-            echo 
-            return 
+            echo
+            return
         fi
         if ! cat /proc/partitions | grep -qE "$device([^[:digit:]]|$)"; then
             echo "/dev/$device"
@@ -93,7 +100,8 @@ get_available_device() {
 export -f get_available_device
 
 get_new_and_connect_to_nbd() {
-    local source=$1
+    local nbd_option=$1
+    local source=$2
     local device=""
 
     flock 200
@@ -110,38 +118,76 @@ get_new_and_connect_to_nbd() {
         echo "Error: cannot get available /dev/nbdX device." >&2
         return 1
     fi
-    
-    qemu-nbd --connect=$device $source
+
+    if [[ -n "$nbd_option" ]]; then
+       nbd_option=" $nbd_option"
+    fi
+
+
+    qemu-nbd$nbd_option --connect=$device $source
     status=$?
     if [[ $status -ne 0 ]]; then
         qemu-nbd --disconnect $device >/dev/null 2>&1
-        echo "qemu-nbd --connect=$device $source: error" >&2
+        echo "qemu-nbd$nbd_option --connect=$device $source: error" >&2
         return $status
     fi
     flock -u 200
 
     echo $device
-    return 0 
+    return 0
 }
 export -f get_new_and_connect_to_nbd
 
+is_valid_qemu_nbd_option() {
+    local opt="$1"
+    for valid_opt in "${VALID_QEMU_NBD_OPTIONS[@]}"; do
+        if [[ "$opt" == "$valid_opt" || "$opt" == "$valid_opt="* ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
 
 disk_mount() {
     local source=""
     local target=""
     local part_id=0
-    local option=""
+    local mount_option=""
+    local nbd_option=""
     local timeout=0
 
     # Parsing arguments
     while [[ $# -gt 0 ]]; do
-        case "$1" in 
+        case "$1" in
             -o)
-                if [[ -z "$option" ]]; then
-                    option="$2"
+                if [[ -z "$mount_option" ]]; then
+                    mount_option="$2"
                 else
-                    option="$option,$2"
+                    mount_option="$mount_option,$2"
                 fi
+                shift 2
+                ;;
+            -q)
+                IFS=',' read -ra opts <<< "$2"
+                for opt in "${opts[@]}"; do
+                    if [[ "$opt" =~ ^connect$|^disconnect$ ]]; then
+                        :
+                    elif is_valid_qemu_nbd_option "$opt"; then
+                            if [[ "${#opt}" -eq 1 ]]; then
+                                nbd_option="$nbd_option -$opt"
+                        else
+                            if [[ "$opt" =~ ^[a-zA-Z][[:space:]]+.*$ ]]; then
+                                nbd_option="$nbd_option -$opt"
+                            elif [[ "$opt" == *=* ]]; then
+                                nbd_option="$nbd_option --$opt"
+                            else
+                                nbd_option="$nbd_option --$opt"
+                            fi
+                        fi
+                    else
+                        echo "WARNING: Unknown qemu-nbd option: $opt" >&2
+                    fi
+                done
                 shift 2
                 ;;
             -p)
@@ -177,29 +223,29 @@ disk_mount() {
     if ! [[ "$part_id" =~ ^[0-9]+$ ]]; then
         echo "Error: Invalid value for -p. Partition must be a positive integer." >&2
         return 1
-    fi            
+    fi
 
     # Validate TIMEOUT (only numbers allowed)
     if ! [[ "$timeout" =~ ^[0-9]+$ ]]; then
         echo "Error: Invalid value for -t. Timeout must be a positive integer." >&2
         return 1
-    fi            
+    fi
 
-    if [[ ! -f "$source" ]]; then 
+    if [[ ! -f "$source" ]]; then
         echo "mount: source ($source) doesn\'t exist" >&2
         return 1
     fi
 
-    if [[ ! -d "$target" ]]; then 
+    if [[ ! -d "$target" ]]; then
         echo "mount: mountpoint ($target) doesn\'t exist" >&2
         return 1
     fi
-        
-    disconnect=false 
+
+    disconnect=false
     device=$(check_source $source)
     status=$?
     if [[ -z "$device" ]] || [[ $status -ne 0 ]]; then
-        device=$(timeout ${timeout}s bash -c "get_new_and_connect_to_nbd $source")
+        device=$(timeout ${timeout}s bash -c "get_new_and_connect_to_nbd \"$nbd_option\" \"$source\"")
         status=$?
         if [[ $status -eq 124 ]]; then
             echo "Error: Waitting for free nbd device timeouted after ${timeout}s." >&2
@@ -217,17 +263,17 @@ disk_mount() {
         source_device="${device}p${part_id}"
     fi
 
-    if [[ -n "$option" ]]; then
-       option=" -o $option"
+    if [[ -n "$mount_option" ]]; then
+       mount_option=" -o $mount_option"
     fi
-    
-    mount$option $source_device $target
+
+    mount$mount_option $source_device $target
     status=$?
     if [[ $status -ne 0 ]]; then
-        if $disconnect; then 
+        if $disconnect; then
             qemu-nbd --disconnect $device >/dev/null 2>&1
         fi
-        echo "mount$option $source_device $target: error" >&2
+        echo "mount$mount_option $source_device $target: error" >&2
         return $status
     fi
 
@@ -240,7 +286,7 @@ disk_unmount() {
 
     # Parsing arguments
     while [[ $# -gt 0 ]]; do
-        case "$1" in 
+        case "$1" in
             *)
                 if [[ -z "$target" ]]; then
                     target="$1"
@@ -260,7 +306,7 @@ disk_unmount() {
         return 1
     fi
 
-    if [[ ! -d "$target" ]]; then 
+    if [[ ! -d "$target" ]]; then
         echo "mount: mountpoint ($target) doesn\'t exist" >&2
         return 1
     fi
@@ -283,15 +329,15 @@ disk_unmount() {
     else
         device=$source_device
     fi
-    
-    umount $source_device
+
+    umount -f $source_device
     status=$?
     if [[ $status -ne 0 ]]; then
        qemu-nbd --disconnect $device >/dev/null 2>&1
-       echo "umount $source_device: error" >&2
+       echo "umount -f $source_device: error" >&2
        return $status
     fi
-    
+
     if ! mount | grep -q "$device"; then
         qemu-nbd --disconnect $device
         status=$?
@@ -306,11 +352,35 @@ disk_unmount() {
 
 disk_info() {
     local source=""
+    local nbd_option=""
     local timeout=0
 
     # Parsing arguments
     while [[ $# -gt 0 ]]; do
-        case "$1" in 
+        case "$1" in
+            -q)
+                IFS=',' read -ra opts <<< "$2"
+                for opt in "${opts[@]}"; do
+                    if [[ "$opt" =~ ^connect$|^disconnect$ ]]; then
+                        :
+                    elif is_valid_qemu_nbd_option "$opt"; then
+                            if [[ "${#opt}" -eq 1 ]]; then
+                                nbd_option="$nbd_option -$opt"
+                        else
+                            if [[ "$opt" =~ ^[a-zA-Z][[:space:]]+.*$ ]]; then
+                                nbd_option="$nbd_option -$opt"
+                            elif [[ "$opt" == *=* ]]; then
+                                nbd_option="$nbd_option --$opt"
+                            else
+                                nbd_option="$nbd_option --$opt"
+                            fi
+                        fi
+                    else
+                        echo "WARNING: Unknown qemu-nbd option: $opt" >&2
+                    fi
+                done
+                shift 2
+                ;;
             -t)
                 timeout="$2"
                 shift 2
@@ -338,18 +408,18 @@ disk_info() {
     if ! [[ "$timeout" =~ ^[0-9]+$ ]]; then
         echo "Error: Invalid value for -t. Timeout must be a positive integer." >&2
         return 1
-    fi            
+    fi
 
-    if [[ ! -f "$source" ]]; then 
+    if [[ ! -f "$source" ]]; then
         echo "mount: source ($source) doesn\'t exist" >&2
         return 1
     fi
 
-    disconnect=false 
+    disconnect=false
     device=$(check_source $source)
     status=$?
     if [[ -z "$device" ]] || [[ $status -ne 0 ]]; then
-        device=$(timeout ${timeout}s bash -c "get_new_and_connect_to_nbd $source")
+        device=$(timeout ${timeout}s bash -c "get_new_and_connect_to_nbd \"$nbd_option\" \"$source\"")
         status=$?
         if [[ $status -eq 124 ]]; then
             echo "Error: Waitting for free nbd device timeouted after ${timeout}s." >&2
@@ -364,7 +434,7 @@ disk_info() {
     fdisk -l $device
     echo
 
-    if $disconnect; then 
+    if $disconnect; then
         qemu-nbd --disconnect $device >/dev/null 2>&1
     fi
 
