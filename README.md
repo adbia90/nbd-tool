@@ -157,6 +157,10 @@ nbd-tool unmount /mnt/nbd
 nbd-tool info -t 60 test.img
 ```
 
+```bash
+nbd-tool disconnect_all
+```
+
 ## Troubleshooting
 
 - **"Error: nbd module is not loadaded to kernel**:
