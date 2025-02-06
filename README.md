@@ -153,6 +153,10 @@ nbd-tool unmount /mnt/nbd
 nbd-tool info -t 60 test.img
 ```
 
+#### 4. disconnect_all
+
+Disconnect all unused discs.
+
 ## Troubleshooting
 
 - **"Error: nbd module is not loadaded to kernel**:

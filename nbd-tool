@@ -17,8 +17,8 @@ VALID_QEMU_NBD_OPTIONS=(
     "nocache" "aio"  "shared"
 )
 
-
-LOCKFILE="/tmp/nbd-mount.lock"
+LOGFILE="/var/log/nbd-mount.log"
+LOCKFILE="/var/lock/nbd-mount.lock"
 exec 200>"$LOCKFILE"
 
 # Function displaying help
@@ -43,6 +43,7 @@ show_help() {
     echo "          -t TIMEOUT  Timeout in seconds for waiting for free nbd devie, if 0 disable timeout (default: 0)."
     echo "      Requires:"
     echo "          SOURCE      Path to qcow2 file."
+    echo "  disconnect_all      Disconnect all unsed discs."
     echo "Options:"
     echo "  -h                  Display this help message."
     echo
@@ -51,9 +52,24 @@ show_help() {
     echo "  $0 mount -o rw,defaults -a noatime -q format=qcow2 -t 60 -p 1 test.img /mnt/nbd"
     echo "  $0 unmount /mnt/nbd"
     echo "  $0 info -t 60 test.img"
+    echo "  $0 disconnect_all"
     echo
 }
 
+
+log() {
+    local TIMESTAMP="[$(date +"%Y-%m-%d %H:%M:%S")]"
+    local LEVEL=$1
+    local MESSAGE=$2
+    local OUTPUT_FD=1
+
+    [[ "$LEVEL" == "ERROR" ]] && OUTPUT_FD=2
+
+    local LOG_LINE=$(printf "%-19s | %-8s | %s\n" "$TIMESTAMP" "$LEVEL" "$MESSAGE")
+
+    echo "$LOG_LINE" >&$OUTPUT_FD
+    echo "$LOG_LINE" >> "$LOGFILE"
+}
 
 check_nbd_modprobe() {
     lsmod | grep -q nbd
@@ -115,7 +131,7 @@ get_new_and_connect_to_nbd() {
     done
 
     if [[ -z "$device" ]]; then
-        echo "Error: cannot get available /dev/nbdX device." >&2
+        echo "cannot get available /dev/nbdX device."
         return 1
     fi
 
@@ -128,7 +144,7 @@ get_new_and_connect_to_nbd() {
     status=$?
     if [[ $status -ne 0 ]]; then
         qemu-nbd --disconnect $device >/dev/null 2>&1
-        echo "qemu-nbd$nbd_option --connect=$device $source: error" >&2
+        echo "qemu-nbd$nbd_option --connect=$device $source"
         return $status
     fi
     flock -u 200
@@ -185,7 +201,7 @@ disk_mount() {
                             fi
                         fi
                     else
-                        echo "WARNING: Unknown qemu-nbd option: $opt" >&2
+                        log "WARNING" "Unknown qemu-nbd option: $opt"
                     fi
                 done
                 shift 2
@@ -204,7 +220,7 @@ disk_mount() {
                 elif [[ -z "$target" ]]; then
                     target="$1"
                 else
-                    echo "ERROR: unknown argument: $1" >&2
+                    log "ERROR" "unknown argument: $1"
                     show_help
                     return 1
                 fi
@@ -214,30 +230,30 @@ disk_mount() {
     done
 
     if [[ -z "$source" || -z "$target" ]]; then
-        echo "Error: SOURCE and TARGET are required for 'mount'." >&2
+        log "ERROR" "SOURCE and TARGET are required for 'mount'."
         show_help
         return 1
     fi
 
     # Validate PARTITION (only numbers allowed)
     if ! [[ "$part_id" =~ ^[0-9]+$ ]]; then
-        echo "Error: Invalid value for -p. Partition must be a positive integer." >&2
+        log "ERROR" "Invalid value for -p. Partition must be a positive integer."
         return 1
     fi
 
     # Validate TIMEOUT (only numbers allowed)
     if ! [[ "$timeout" =~ ^[0-9]+$ ]]; then
-        echo "Error: Invalid value for -t. Timeout must be a positive integer." >&2
+        log "ERROR" "Invalid value for -t. Timeout must be a positive integer."
         return 1
     fi
 
     if [[ ! -f "$source" ]]; then
-        echo "mount: source ($source) doesn\'t exist" >&2
+        log "ERROR"  "mount: source ($source) doesn\'t exist"
         return 1
     fi
 
     if [[ ! -d "$target" ]]; then
-        echo "mount: mountpoint ($target) doesn\'t exist" >&2
+        log "ERROR" "mount: mountpoint ($target) doesn\'t exist"
         return 1
     fi
 
@@ -248,10 +264,10 @@ disk_mount() {
         device=$(timeout ${timeout}s bash -c "get_new_and_connect_to_nbd \"$nbd_option\" \"$source\"")
         status=$?
         if [[ $status -eq 124 ]]; then
-            echo "Error: Waitting for free nbd device timeouted after ${timeout}s." >&2
+            log "ERROR" "Waitting for free nbd device timeouted after ${timeout}s."
             return $status
         elif [[ $status -ne 0 ]]; then
-            echo "$device" >&2
+            log "ERROR" "$device"
             return $status
         fi
         disconnect=true
@@ -273,7 +289,7 @@ disk_mount() {
         if $disconnect; then
             qemu-nbd --disconnect $device >/dev/null 2>&1
         fi
-        echo "mount$mount_option $source_device $target: error" >&2
+        log "ERROR" "mount$mount_option $source_device $target: error"
         return $status
     fi
 
@@ -291,7 +307,7 @@ disk_unmount() {
                 if [[ -z "$target" ]]; then
                     target="$1"
                 else
-                    echo "ERROR: unknown argument: $1" >&2
+                    log "ERROR" "unknown argument: $1"
                     show_help
                     return 1
                 fi
@@ -301,20 +317,20 @@ disk_unmount() {
     done
 
     if [[ -z "$target" ]]; then
-        echo "Error: TARGET are required for 'unmount'." >&2
+        log "ERROR" "TARGET are required for 'unmount'."
         show_help
         return 1
     fi
 
     if [[ ! -d "$target" ]]; then
-        echo "mount: mountpoint ($target) doesn\'t exist" >&2
+        log "ERROR" "mount: mountpoint ($target) doesn\'t exist"
         return 1
     fi
 
     source_device=$(findmnt -f -n -o SOURCE $target)
     status=$?
     if [[ -z "$source_device" ]] || [[ $status -ne 0 ]]; then
-        echo "Error: Cannot find mountpoint for $target, probably is not mounted" >&2
+        log "Error" "Cannot find mountpoint for $target, probably is not mounted"
         return $status
     fi
 
@@ -334,7 +350,7 @@ disk_unmount() {
     status=$?
     if [[ $status -ne 0 ]]; then
        qemu-nbd --disconnect $device >/dev/null 2>&1
-       echo "umount -f $source_device: error" >&2
+       log "ERROR" "umount -f $source_device: error"
        return $status
     fi
 
@@ -342,7 +358,7 @@ disk_unmount() {
         qemu-nbd --disconnect $device
         status=$?
         if [[ $status -ne 0 ]]; then
-           echo "qemu-nbd --disconnect $device: error" >&2
+           log "ERROR" "qemu-nbd --disconnect $device: error"
            return $status
         fi
     fi
@@ -376,7 +392,7 @@ disk_info() {
                             fi
                         fi
                     else
-                        echo "WARNING: Unknown qemu-nbd option: $opt" >&2
+                        log "WARNING" "Unknown qemu-nbd option: $opt"
                     fi
                 done
                 shift 2
@@ -389,7 +405,7 @@ disk_info() {
                 if [[ -z "$source" ]]; then
                     source="$1"
                 else
-                    echo "ERROR: unknown argument: $1" >&2
+                    log "ERROR" "unknown argument: $1"
                     show_help
                     return 1
                 fi
@@ -399,19 +415,19 @@ disk_info() {
     done
 
     if [[ -z "$source" ]]; then
-        echo "Error: SOURCE are required for 'info'." >&2
+        log "ERROR" "SOURCE are required for 'info'."
         show_help
         return 1
     fi
 
     # Validate TIMEOUT (only numbers allowed)
     if ! [[ "$timeout" =~ ^[0-9]+$ ]]; then
-        echo "Error: Invalid value for -t. Timeout must be a positive integer." >&2
+        log "Error" "Invalid value for -t. Timeout must be a positive integer."
         return 1
     fi
 
     if [[ ! -f "$source" ]]; then
-        echo "mount: source ($source) doesn\'t exist" >&2
+        log "ERROR" "mount: source ($source) doesn\'t exist."
         return 1
     fi
 
@@ -422,17 +438,17 @@ disk_info() {
         device=$(timeout ${timeout}s bash -c "get_new_and_connect_to_nbd \"$nbd_option\" \"$source\"")
         status=$?
         if [[ $status -eq 124 ]]; then
-            echo "Error: Waitting for free nbd device timeouted after ${timeout}s." >&2
+            log "ERROR" "Waitting for free nbd device timeouted after ${timeout}s."
             return $status
         elif [[ $status -ne 0 ]]; then
-            echo "$device" >&2
+            log "ERROR" "$device"
             return $status
         fi
         disconnect=true
     fi
-    echo
+    log "INFO" ""
     fdisk -l $device
-    echo
+    log "INFO" ""
 
     if $disconnect; then
         qemu-nbd --disconnect $device >/dev/null 2>&1
@@ -441,14 +457,46 @@ disk_info() {
     return 0
 }
 
+disconnect_all() {
+    # Parsing arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            *)
+                log "ERROR" "unknown argument: $1"
+                show_help
+                return 1
+
+                shift
+                ;;
+        esac
+    done
+
+    log "INFO" "Disconnecting all unsed nbd devices."
+
+    flock 200
+    for device in `cat /proc/partitions | grep -oE "nbd[[:digit:]]+$"`; do
+        device="/dev/$device"
+        output=$(mount | grep -qE "$device([^[:digit:]])")
+        status=$?
+        if [[ $status -ne 0 ]]; then
+            log "INFO" "Disconnecting: $device."
+            qemu-nbd --disconnect $device
+        fi
+    done
+    flock -u 200
+
+    log "SUCCESS" "All done."
+    return 0
+}
+
 #Check if nbd module is loded to kernel
 if ! check_nbd_modprobe; then
-    echo "Error: nbd module is not loadaded to kernel" >&2
+    log "ERROR" "nbd module is not loadaded to kernel."
     exit 1
 fi
 
 if [[ $EUID -ne 0 ]]; then
-    echo "Error: This script must be run as root." >&2
+    log "Error" "This script must be run as root."
     exit 1
 fi
 
@@ -461,7 +509,7 @@ fi
 # Parsing arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        mount|unmount|info)
+        mount|unmount|info|disconnect_all)
             ACTION="$1"
             shift
             ;;
@@ -478,7 +526,7 @@ done
 
 # Check if required parameters are provided
 if [[ -z "$ACTION" ]]; then
-    echo "Error: ACTION is required." >&2
+    log "ERROR" "ACTION is required."
     show_help
     exit 1
 fi
@@ -503,8 +551,14 @@ case "$ACTION" in
 
         exit $status
         ;;
+    disconnect_all)
+        disconnect_all "${ARGS[@]}"
+        status=$?
+
+        exit $status
+        ;;
     *)
-        echo "Error: Unknown action '$ACTION'." >&2
+        log "ERROR"  "Unknown action '$ACTION'."
         show_help
         exit 1
         ;;
