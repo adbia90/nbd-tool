@@ -132,6 +132,10 @@ Info (fdisk) of qcow2 disk.
 
 - SOURCE      Path to qcow2 file.
 
+#### 4. disconnect_all
+
+Disconnect all unused discs.
+
 ### Options
 - -h        Display help message.
 
@@ -152,10 +156,6 @@ nbd-tool unmount /mnt/nbd
 ```bash
 nbd-tool info -t 60 test.img
 ```
-
-#### 4. disconnect_all
-
-Disconnect all unused discs.
 
 ## Troubleshooting
 
