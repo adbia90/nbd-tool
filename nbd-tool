@@ -17,8 +17,8 @@ VALID_QEMU_NBD_OPTIONS=(
     "nocache" "aio"  "shared"
 )
 
-LOGFILE="/var/log/nbd-mount.log"
-LOCKFILE="/var/lock/nbd-mount.lock"
+LOGFILE="/var/log/nbd-tool.log"
+LOCKFILE="/var/lock/nbd-tool.lock"
 exec 200>"$LOCKFILE"
 
 # Function displaying help
