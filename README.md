@@ -170,4 +170,4 @@ nbd-tool disconnect_all
 
 ## License
 
-This script is distributed under the GPLv3 License. See the LICENSE file for details.
+This script is distributed under the MIT License. See the LICENSE file for details.
