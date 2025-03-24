@@ -120,7 +120,17 @@ get_new_and_connect_to_nbd() {
     local source=$2
     local device=""
 
-    flock 200
+    while true; do
+       flock -n 200
+       if [ $? -eq 0 ]; then
+           break
+       else
+           sleep_time=$(awk -v min=0.5 -v max=1 'BEGIN{srand(); print min + (max-min)*rand()}')
+           sleep $sleep_time
+           continue
+       fi
+    done
+
     while true; do
         device=$(get_available_device)
         if [[ -n "$device" ]]; then
@@ -473,7 +483,17 @@ disconnect_all() {
 
     log "INFO" "Disconnecting all unsed nbd devices."
 
-    flock 200
+    while true; do
+       flock -n 200
+       if [ $? -eq 0 ]; then
+           break
+       else
+           sleep_time=$(awk -v min=0.5 -v max=1 'BEGIN{srand(); print min + (max-min)*rand()}')
+           sleep $sleep_time
+           continue
+       fi
+    done
+
     for device in `cat /proc/partitions | grep -oE "nbd[[:digit:]]+$"`; do
         device="/dev/$device"
         output=$(mount | grep -qE "$device([^[:digit:]])")
