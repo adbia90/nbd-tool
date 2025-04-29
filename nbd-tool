@@ -161,7 +161,7 @@ get_new_and_connect_to_nbd() {
       fi
     fi
 
-    sleep 0.5
+    sleep 1
 
     connected_device=$(check_source "$source")
     if [[ -n "$connected_device" ]]; then
@@ -383,6 +383,8 @@ disk_unmount() {
    log "ERROR" "umount -f $source_device: error"
    return $status
   fi
+
+  sleep 1
 
   if ! mount | grep -q "$device"; then
     qemu-nbd --disconnect $device
